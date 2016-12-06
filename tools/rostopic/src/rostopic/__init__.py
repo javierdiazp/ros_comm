@@ -45,6 +45,7 @@ import socket
 import time
 import traceback
 import yaml
+
 try:
     from xmlrpc.client import Fault
 except ImportError:
@@ -1383,9 +1384,15 @@ def _rostopic_cmd_find(argv=sys.argv):
     Implements 'rostopic type'
     :param argv: command-line args, ``[str]``
     """
+    import rospkg
+    import roslib.msgs as msgsLib
+    
     args = argv[2:]
     from optparse import OptionParser
     parser = OptionParser(usage="usage: %prog find msg-type", prog=NAME)
+    parser.add_option("-r", "--recursive",
+                      dest="recursive", default=False, action="store_true",
+                      help="also searches the message's sub-types")
     options, args = parser.parse_args(args)
     if not len(args):
         parser.error("please specify a message type")
@@ -1393,6 +1400,60 @@ def _rostopic_cmd_find(argv=sys.argv):
         parser.error("you may only specify one message type")
     print('\n'.join(find_by_type(args[0])))
     
+    # Packages list
+    rospack = rospkg.RosPack()
+    packagesList = sorted(rospack.list())
+    
+    # Message types list
+    childrenDict = {}
+    numberOfPackages = len(packagesList)
+    for i in range(numberOfPackages):
+        pkg = packagesList[i]
+        sys.stdout.write('\r%2.1f%%' % (100.0*(i+1)/(numberOfPackages))),
+        if i == numberOfPackages-1:
+            sys.stdout.write('\n')
+        sys.stdout.flush()
+        
+        specsList = msgsLib.get_pkg_msg_specs(pkg)[0]
+        for spec in specsList:
+            fields = spec[1].fields()
+            fieldsSet = set()
+            for f_type, f_name in fields:
+                fieldsSet.add(f_type)
+            childrenDict[spec[0]] = fieldsSet
+            
+    print(str(childrenDict['zeroconf_msgs/PublishedService']))
+    
+    # Topics list
+    master = rosgraph.Master('/rostopic')
+    try:
+        t_list = _master_get_topic_types(master)
+    except socket.error:
+        raise ROSTopicIOException("Unable to communicate with master!")
+        
+    positiveTopics = []
+    typesDict = {}
+    typesDict[args[0]] = True
+        
+    # For each topic, search the dictionary. If it doesn't exist, add it as "false" and search its children.
+    
+    def recursive_find(rootType, targetType):
+         if (targetType not in typesDict):
+            typesDict[targetType] = False
+            children = childrenDict[targetType]
+            for child in children:
+                if (recursive_find(child, targetType)):
+                    typesDict[targetType] = True
+                    break
+         return typesDict[targetType]
+            
+    for t_name, t_type in t_list:
+        if (recursive_find(t_type, args[0])):
+            positiveTopics.append((t_name, t_type))
+            
+    positiveTopics = sorted(positiveTopics)
+    for t_name, t_type in positiveTopics:
+        print(t_name, t_type)
 
 def _resource_name_package(name):
     """
