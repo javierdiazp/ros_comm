@@ -1400,59 +1400,90 @@ def _rostopic_cmd_find(argv=sys.argv):
         parser.error("you may only specify one message type")
     
     if options.recursive:
-        # Packages list
-        rospack = rospkg.RosPack()
-        packagesList = sorted(rospack.list())
-        
-        # Message types list
-        childrenDict = {}
-        numberOfPackages = len(packagesList)
-        for i in range(numberOfPackages):
-            pkg = packagesList[i]
-            sys.stdout.write('\r%2.1f%%' % (100.0*(i+1)/(numberOfPackages))),
-            if i == numberOfPackages-1:
-                sys.stdout.write('\n')
-            sys.stdout.flush()
-            
-            specsList = msgsLib.get_pkg_msg_specs(pkg)[0]
-            for spec in specsList:
-                fields = spec[1].fields()
-                fieldsSet = set()
-                    
-                for f_type, f_name in fields:
-                    fieldsSet.add(msgsLib.resolve_type(f_type, pkg))
-                childrenDict[spec[0]] = fieldsSet
-        
+
         # Topics list
         master = rosgraph.Master('/rostopic')
         try:
-            t_list = _master_get_topic_types(master)
+            all_topics = sorted(_master_get_topic_types(master))
+            state = master.getSystemState()
+            pubs, subs, _ = state
+            active_topics = sorted(list(set([t for t,_ in pubs] + [t for t,_ in subs])))
+            t_list = []
+            
+            all_topics_pos = 0
+            active_topics_pos = 0
+            while active_topics_pos < len(active_topics) and all_topics_pos < len(all_topics):
+                all_topics_item = all_topics[all_topics_pos]
+                active_topics_item = active_topics[active_topics_pos]
+                
+                if (all_topics_item[0] == active_topics_item):
+                    t_list.append(all_topics_item)
+                    all_topics_pos += 1
+                    active_topics_pos += 1
+                elif (all_topics_item[0] < active_topics_item):
+                    all_topics_pos += 1
+                else:
+                    active_topics_pos += 1
+                    
         except socket.error:
             raise ROSTopicIOException("Unable to communicate with master!")
             
         positiveTopics = []
         typesDict = {}
         typesDict[args[0]] = True
-            
-        # For each topic, search the dictionary. If it doesn't exist, add it as "false" and search its children.
         
+        # Get the topic type's package name
+        def get_pkg(t_type):
+            split = t_type.split(msgsLib.SEP)
+            if (len(split) == 1):
+                return ""
+            else:
+                return split[0]
+        
+        # Add the package's messages to children dictionary
+        childrenDict = {}
+        def add_pkg(pkg):
+            try:
+                specsList = msgsLib.get_pkg_msg_specs(pkg)[0]
+            except roslib.packages.InvalidROSPkgException:
+                return
+            for spec in specsList:
+                fields = spec[1].fields()
+                fieldsSet = set()
+                        
+                for f_type, f_name in fields:
+                    fieldsSet.add(msgsLib.resolve_type(f_type, pkg))
+                childrenDict[spec[0]] = fieldsSet
+        
+        # For each topic, search the dictionary. If it doesn't exist, add it as "false" and search its children.
         def recursive_find(rootType, targetType):
             if (rootType not in typesDict):
                 typesDict[rootType] = False
                 children = []
+                if (rootType not in childrenDict):
+                    #revisar que funciona bien si no hay paquete
+                    add_pkg(get_pkg(rootType))
+                
                 if (rootType in childrenDict):
                     children = childrenDict[rootType]
+                    
                 for child in children:
                     if (recursive_find(child, targetType)):
                         typesDict[rootType] = True
                         break
             return typesDict[rootType]
-                
+        
+        i = 0
         for t_name, t_type in t_list:
+            i += 1
+            sys.stdout.write('\rSearching... %2.1f%%' % (100.0*(i)/(len(t_list))))
+            if i == len(t_list):
+                sys.stdout.write('\n\n')
+            sys.stdout.flush()
+
             if (recursive_find(t_type, args[0])):
                 positiveTopics.append((t_name, t_type))
-                
-        positiveTopics = sorted(positiveTopics)
+
         for t_name, t_type in positiveTopics:
             print(t_name, t_type)
             
